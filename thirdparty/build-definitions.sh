@@ -1116,6 +1116,10 @@ build_oatpp(){
 
 build_oatpp_swagger(){
   OATPP_SWAGGER_BUILD_DIR=$TP_BUILD_DIR/$OATPP_SWAGGER_NAME$MODE_SUFFIX
+  #Copy swagger resource files to www directory
+  OATPP_SWAGGER_RESOURCE_DIR=$OATPP_SWAGGER_SOURCE/res/
+  mkdir -p $TP_DIR/../www/swagger/res/
+  cp -r $OATPP_SWAGGER_RESOURCE_DIR/* $TP_DIR/../www/swagger/res/
   mkdir -p $OATPP_SWAGGER_BUILD_DIR
   pushd $OATPP_SWAGGER_BUILD_DIR
   cmake \

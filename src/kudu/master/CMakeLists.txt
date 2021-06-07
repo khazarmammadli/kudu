@@ -86,6 +86,7 @@ target_link_libraries(master
   kudu_util
   master_proto
   rebalance
+  rest
   rpc_header_proto
   security
   server_process

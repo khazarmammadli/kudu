@@ -51,6 +51,7 @@
 #include "kudu/master/txn_manager.h"
 #include "kudu/master/txn_manager_service.h"
 #include "kudu/rpc/rpc_controller.h"
+#include "kudu/rest/rest_server.h"
 #include "kudu/rpc/service_if.h"
 #include "kudu/security/token_signer.h"
 #include "kudu/server/rpc_server.h"
@@ -112,11 +113,25 @@ DEFINE_string(location_mapping_cmd, "",
               "characters from the set [a-zA-Z0-9_-.]. If the cluster is not "
               "using location awareness features this flag should not be set.");
 
+DEFINE_bool(rest_server_enabled, false, "Should a rest endpoint be enabled on this master");
+TAG_FLAG(rest_server_enabled, experimental);
+
+DEFINE_bool(rest_swagger_enabled, false, "Should swagger page exist,"
+                                         "swagger page is disabled for test cases");
+TAG_FLAG(rest_swagger_enabled,experimental);
+
+DEFINE_string(rest_server_bind_address,
+              "0.0.0.0:8061",
+              "Address where the rest server should start up");
+TAG_FLAG(rest_server_bind_address, experimental);
+
 DECLARE_bool(txn_manager_lazily_initialized);
 DECLARE_bool(txn_manager_enabled);
+DECLARE_string(master_addresses);
 
 using kudu::consensus::RaftPeerPB;
 using kudu::fs::ErrorHandlerType;
+using kudu::rest::RestServer;
 using kudu::rpc::ServiceIf;
 using kudu::security::TokenSigner;
 using kudu::transactions::TxnManager;
@@ -199,6 +214,11 @@ Master::Master(const MasterOptions& opts)
     location_cache_.reset(new LocationCache(location_cmd, metric_entity_.get()));
   }
   ts_manager_.reset(new TSManager(location_cache_.get(), metric_entity_));
+  if (FLAGS_rest_server_enabled) {
+    rest_server_.reset(new RestServer(FLAGS_master_addresses,
+                                      FLAGS_rest_server_bind_address,
+                                      FLAGS_rest_swagger_enabled));
+  }
 }
 
 Master::~Master() {
@@ -213,6 +233,7 @@ Status Master::Init() {
 
   RETURN_NOT_OK(ThreadPoolBuilder("init").set_max_threads(1).Build(&init_pool_));
   startup_path_handler_->set_is_tablet_server(false);
+  RETURN_NOT_OK(ThreadPoolBuilder("rest").set_max_threads(1).Build(&rest_pool_));
   RETURN_NOT_OK(KuduServer::Init());
 
   if (web_server_) {
@@ -280,6 +301,10 @@ Status Master::StartAsync() {
   RETURN_NOT_OK(init_pool_->Submit([this]() {
     this->InitCatalogManagerTask();
   }));
+
+  if (rest_server_) {
+    RETURN_NOT_OK(rest_pool_->Submit([this]() { this->rest_server_->Run(); }));
+  }
 
   if (txn_manager_ && !FLAGS_txn_manager_lazily_initialized) {
     // Start initializing the TxnManager.
@@ -440,6 +465,7 @@ void Master::ShutdownImpl() {
     catalog_manager_->Shutdown();
     fs_manager_->UnsetErrorNotificationCb(ErrorHandlerType::DISK_ERROR);
     fs_manager_->UnsetErrorNotificationCb(ErrorHandlerType::CFILE_CORRUPTION);
+    rest_pool_->Shutdown();
 
     // 3. Shut down generic subsystems.
     KuduServer::Shutdown();

@@ -40,6 +40,10 @@ class MonoTime;
 class Thread;
 class ThreadPool;
 
+namespace rest {
+class RestServer;
+}
+
 namespace rpc {
 class RpcContext;
 }  // namespace rpc
@@ -184,6 +188,7 @@ class Master : public kserver::KuduServer {
   std::unique_ptr<CatalogManager> catalog_manager_;
   std::unique_ptr<transactions::TxnManager> txn_manager_;
   std::unique_ptr<MasterPathHandlers> path_handlers_;
+  std::unique_ptr<rest::RestServer> rest_server_;
 
   // The status of the catalog manager initialization. This is set
   // by the async initialization task.
@@ -197,6 +202,7 @@ class Master : public kserver::KuduServer {
 
   // For initializing the catalog manager and TxnManager.
   std::unique_ptr<ThreadPool> init_pool_;
+  std::unique_ptr<ThreadPool> rest_pool_;
 
   MasterOptions opts_;
 
