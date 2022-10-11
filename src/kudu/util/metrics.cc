@@ -68,6 +68,16 @@ void WriteMetricsToJson(JsonWriter* writer,
   writer->EndArray();
 }
 
+template<typename Collection>
+void WriteMetricsToPrometheus (PrometheusWriter* writer,
+                               const Collection& metrics) {
+  for(const auto& val : metrics) {
+    const auto& m = val.second;
+    WARN_NOT_OK(m->WriteAsPrometheus(writer),
+                  Substitute("Failed to write $0 as Prometheus", val.first->name()));
+  }
+}
+
 void WriteToJson(JsonWriter* writer,
                  const MergedEntityMetrics &merged_entity_metrics,
                  const MetricJsonOptions &opts) {
@@ -392,6 +402,22 @@ Status MetricEntity::WriteAsJson(JsonWriter* writer, const MetricJsonOptions& op
   return Status::OK();
 }
 
+Status MetricEntity::WriteAsPrometheus(PrometheusWriter* writer) const {
+  MetricMap metrics;
+  AttributeMap attrs;
+  MetricFilters filters;
+
+  // Empty filters results in getting all the metrics for this MetricEntity
+  // Thus, eliminating the need to check status message to know if Entity has been filtered
+  Status s = GetMetricsAndAttrs(filters, &metrics, &attrs);
+  // Only emit server level metrics
+  if (strcmp(prototype_->name(),"server") == 0) {
+    WriteMetricsToPrometheus(writer,metrics);
+  }
+
+  return Status::OK();
+}
+
 Status MetricEntity::CollectTo(MergedEntityMetrics* collections,
                                const MetricFilters& filters,
                                const MetricMergeRules& merge_rules) const {
@@ -540,6 +566,22 @@ Status MetricRegistry::WriteAsJson(JsonWriter* writer, const MetricJsonOptions& 
   return Status::OK();
 }
 
+Status MetricRegistry::WriteAsPrometheus(PrometheusWriter* writer) const {
+  EntityMap entities;
+  {
+    std::lock_guard<simple_spinlock> l(lock_);
+    entities = entities_;
+  }
+  for (const auto& e : entities) {
+    WARN_NOT_OK(e.second->WriteAsPrometheus(writer),
+              Substitute("Failed to write entity $0 as Prometheus", e.second->id()));
+  }
+
+  entities.clear(); // necessary to deref metrics we just dumped before doing retirement scan.
+  const_cast<MetricRegistry*>(this)->RetireOldMetrics();
+  return Status::OK();
+}
+
 void MetricRegistry::RetireOldMetrics() {
   std::lock_guard<simple_spinlock> l(lock_);
   for (auto it = entities_.begin(); it != entities_.end();) {
@@ -674,6 +716,15 @@ void MetricPrototype::WriteFields(JsonWriter* writer,
   }
 }
 
+void MetricPrototype::WriteFields(PrometheusWriter* writer) const {
+  std::stringstream output;
+
+  output << "# HELP " << name() << " " << description() << "\n";
+  output << "# TYPE " << name() << " " << MetricType::Name(type()) << "\n";
+
+  writer->WriteEntry(&output);
+}
+
 //
 // FunctionGaugeDetacher
 //
@@ -751,6 +802,15 @@ Status Gauge::WriteAsJson(JsonWriter* writer,
   return Status::OK();
 }
 
+
+Status Gauge::WriteAsPrometheus(PrometheusWriter* writer) const {
+  prototype_->WriteFields(writer);
+
+  WriteValue(writer);
+
+  return Status::OK();
+}
+
 //
 // StringGauge
 //
@@ -822,6 +882,15 @@ void StringGauge::WriteValue(JsonWriter* writer) const {
   writer->String(value());
 }
 
+void StringGauge::WriteValue(PrometheusWriter* writer) const {
+  // Prometheus doesn't support string gauges
+}
+
+Status StringGauge::WriteAsPrometheus(PrometheusWriter* writer) const {
+  // Prometheus doesn't support string gauges
+  return Status::OK();
+}
+
 //
 // MeanGauge
 //
@@ -882,6 +951,15 @@ void MeanGauge::WriteValue(JsonWriter* writer) const {
   writer->String("total_count");
   writer->Double(total_count());
 }
+void MeanGauge::WriteValue(PrometheusWriter* writer) const {
+  std::stringstream output;
+
+  output << prototype_->name() << " " << value() << "\n";
+  output << prototype_->name() << "_count" << " " << total_count() << "\n";
+  output << prototype_->name() << "_sum" << " " << total_sum() << "\n";
+
+  writer->WriteEntry(&output);
+}
 
 //
 // Counter
@@ -918,6 +996,17 @@ Status Counter::WriteAsJson(JsonWriter* writer,
   writer->Int64(value());
 
   writer->EndObject();
+  return Status::OK();
+}
+
+Status Counter::WriteAsPrometheus(PrometheusWriter* writer) const {
+  prototype_->WriteFields(writer);
+
+  std::stringstream output;
+  output << prototype_->name() << " " << value() << "\n";
+
+  writer->WriteEntry(&output);
+
   return Status::OK();
 }
 
@@ -974,6 +1063,24 @@ Status Histogram::WriteAsJson(JsonWriter* writer,
   HistogramSnapshotPB snapshot;
   RETURN_NOT_OK(GetHistogramSnapshotPB(&snapshot, opts));
   writer->Protobuf(snapshot);
+  return Status::OK();
+}
+
+Status Histogram::WriteAsPrometheus(PrometheusWriter* writer) const {
+  prototype_->WriteFields(writer);
+
+  std::stringstream output;
+  output << prototype_->name() << "_bucket" << "{le=\"0.75\"} " << histogram_->ValueAtPercentile(75) << "\n";
+  output << prototype_->name() << "_bucket" << "{le=\"0.95\"} " << histogram_->ValueAtPercentile(95) << "\n";
+  output << prototype_->name() << "_bucket" << "{le=\"0.99\"} " << histogram_->ValueAtPercentile(99) << "\n";
+  output << prototype_->name() << "_bucket" << "{le=\"0.999\"} " << histogram_->ValueAtPercentile(99.9) << "\n";
+  output << prototype_->name() << "_bucket" << "{le=\"0.9999\"} " << histogram_->ValueAtPercentile(99.99) << "\n";
+  output << prototype_->name() << "_bucket" << "{le=\"+Inf\"} " << histogram_->TotalCount() << "\n";
+  output << prototype_->name() << "_sum " << histogram_->TotalSum() << "\n";
+  output << prototype_->name() << "_count " << histogram_->TotalCount() << "\n";
+
+  writer->WriteEntry(&output);
+
   return Status::OK();
 }
 

@@ -256,6 +256,7 @@
 #include "kudu/util/monotime.h"
 #include "kudu/util/status.h"
 #include "kudu/util/striped64.h"
+#include "kudu/util/prometheuswriter.h"
 
 // Define a new entity type.
 //
@@ -581,6 +582,8 @@ class MetricPrototype {
   void WriteFields(JsonWriter* writer,
                    const MetricJsonOptions& opts) const;
 
+  void WriteFields(PrometheusWriter* writer) const;
+
  protected:
   explicit MetricPrototype(CtorArgs args);
   virtual ~MetricPrototype() {
@@ -664,6 +667,8 @@ class MetricEntity : public RefCountedThreadSafe<MetricEntity> {
 
   // See MetricRegistry::WriteAsJson()
   Status WriteAsJson(JsonWriter* writer, const MetricJsonOptions& opts) const;
+
+  Status WriteAsPrometheus(PrometheusWriter* writer) const;
 
   // Collect metrics of this entity to 'collections'. Metrics will be filtered by 'filters',
   // and will be merged under the rule of 'merge_rules'.
@@ -756,6 +761,8 @@ class Metric : public RefCountedThreadSafe<Metric> {
   // All metrics must be able to render themselves as JSON.
   virtual Status WriteAsJson(JsonWriter* writer,
                              const MetricJsonOptions& opts) const = 0;
+  // All metrics must be able to render themselves as Prometheus.
+  virtual Status WriteAsPrometheus(PrometheusWriter* writer) const = 0;
 
   const MetricPrototype* prototype() const { return prototype_; }
 
@@ -877,6 +884,8 @@ class MetricRegistry {
   // output of this function.
   Status WriteAsJson(JsonWriter* writer, const MetricJsonOptions& opts) const;
 
+  // Writes metrics in this registry to given Prometheus 'writer'.
+  Status WriteAsPrometheus(PrometheusWriter* writer) const;
   // For each registered entity, retires orphaned metrics. If an entity has no more
   // metrics and there are no external references, entities are removed as well.
   //
@@ -1019,8 +1028,10 @@ class Gauge : public Metric {
   virtual Status WriteAsJson(JsonWriter* w,
                              const MetricJsonOptions& opts) const OVERRIDE;
 
+  virtual Status WriteAsPrometheus(PrometheusWriter* w) const OVERRIDE;
  protected:
   virtual void WriteValue(JsonWriter* writer) const = 0;
+  virtual void WriteValue(PrometheusWriter* writer) const = 0;
  private:
   DISALLOW_COPY_AND_ASSIGN(Gauge);
 };
@@ -1042,7 +1053,9 @@ class StringGauge : public Gauge {
 
  protected:
   FRIEND_TEST(MetricsTest, SimpleStringGaugeForMergeTest);
+  virtual Status WriteAsPrometheus(PrometheusWriter* w) const OVERRIDE;
   virtual void WriteValue(JsonWriter* writer) const OVERRIDE;
+  virtual void WriteValue(PrometheusWriter* writer) const OVERRIDE;
   void FillUniqueValuesUnlocked();
   std::unordered_set<std::string> unique_values();
  private:
@@ -1072,6 +1085,7 @@ class MeanGauge : public Gauge {
 
  protected:
   virtual void WriteValue(JsonWriter* writer) const override;
+  virtual void WriteValue(PrometheusWriter* writer) const override;
  private:
   double total_sum_;
   double total_count_;
@@ -1146,6 +1160,11 @@ class AtomicGauge : public Gauge {
  protected:
   virtual void WriteValue(JsonWriter* writer) const OVERRIDE {
     writer->Value(value());
+  }
+  virtual void WriteValue(PrometheusWriter* writer) const OVERRIDE {
+    std::stringstream output;
+    output << prototype_->name() << " " << value() << "\n";
+    writer->WriteEntry(&output);
   }
  private:
   AtomicInt<int64_t> value_;
@@ -1238,7 +1257,11 @@ class FunctionGauge : public Gauge {
   virtual void WriteValue(JsonWriter* writer) const OVERRIDE {
     writer->Value(value());
   }
-
+  virtual void WriteValue(PrometheusWriter* writer) const OVERRIDE {
+    std::stringstream output;
+    output << prototype_->name() << " " << value() << "\n";
+    writer->WriteEntry(&output);
+  }
   // Reset this FunctionGauge to return a specific value.
   // This should be used during destruction. If you want a settable
   // Gauge, use a normal Gauge instead of a FunctionGauge.
@@ -1359,6 +1382,7 @@ class Counter : public Metric {
   void IncrementBy(int64_t amount);
   virtual Status WriteAsJson(JsonWriter* w,
                              const MetricJsonOptions& opts) const OVERRIDE;
+  virtual Status WriteAsPrometheus(PrometheusWriter* w) const OVERRIDE;
 
   virtual bool IsUntouched() const override {
     return value() == 0;
@@ -1433,6 +1457,8 @@ class Histogram : public Metric {
 
   virtual Status WriteAsJson(JsonWriter* w,
                              const MetricJsonOptions& opts) const OVERRIDE;
+
+  virtual Status WriteAsPrometheus(PrometheusWriter* w) const OVERRIDE;
 
   // Returns a snapshot of this histogram including the bucketed values and counts.
   Status GetHistogramSnapshotPB(HistogramSnapshotPB* snapshot_pb,

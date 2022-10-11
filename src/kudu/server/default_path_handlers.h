@@ -34,6 +34,8 @@ void AddPostInitializedDefaultPathHandlers(Webserver* webserver);
 // Adds an endpoint to get metrics in JSON format.
 void RegisterMetricsJsonHandler(Webserver* webserver, const MetricRegistry* const metrics);
 
+// Adds an endpoint to get metrics in Prometheus format.
+void RegisterMetricsPrometheusHandler(Webserver* webserver, const MetricRegistry* const metrics);
 } // namespace kudu
 
 #endif // KUDU_SERVER_DEFAULT_PATH_HANDLERS_H
